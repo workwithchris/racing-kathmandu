@@ -14,6 +14,12 @@ extends VehicleBody3D
 @export var steer_speed := 3.0
 
 func _physics_process(delta: float) -> void:
+	# Don't drive while the player is typing in a text field (e.g. place search).
+	if get_viewport().gui_get_focus_owner() is LineEdit:
+		engine_force = 0.0
+		brake = 2.0
+		return
+
 	# get_axis returns strength(positive) - strength(negative).
 	# Positive steering yaws the car toward -X (left), so left is the positive action.
 	var steer_input := Input.get_axis("steer_right", "steer_left")

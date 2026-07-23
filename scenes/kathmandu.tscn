@@ -4,12 +4,14 @@
 [ext_resource type="Script" path="res://scripts/main.gd" id="2"]
 [ext_resource type="Script" path="res://scripts/chase_camera.gd" id="3"]
 [ext_resource type="Script" path="res://scripts/kathmandu_map.gd" id="4"]
+[ext_resource type="Script" path="res://scripts/navigation.gd" id="6"]
+[ext_resource type="Script" path="res://scripts/minimap.gd" id="8"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
-sky_top_color = Color(0.35, 0.55, 0.85, 1)
-sky_horizon_color = Color(0.78, 0.85, 0.9, 1)
-ground_bottom_color = Color(0.4, 0.4, 0.42, 1)
-ground_horizon_color = Color(0.7, 0.72, 0.74, 1)
+sky_top_color = Color(0.42, 0.55, 0.72, 1)
+sky_horizon_color = Color(0.82, 0.79, 0.72, 1)
+ground_bottom_color = Color(0.42, 0.4, 0.37, 1)
+ground_horizon_color = Color(0.78, 0.75, 0.69, 1)
 
 [sub_resource type="Sky" id="sky"]
 sky_material = SubResource("sky_mat")
@@ -18,11 +20,14 @@ sky_material = SubResource("sky_mat")
 background_mode = 2
 sky = SubResource("sky")
 ambient_light_source = 3
-ambient_light_energy = 1.0
+ambient_light_energy = 0.9
 tonemap_mode = 2
+ssao_enabled = true
+ssao_intensity = 1.6
+ssao_radius = 3.0
 fog_enabled = true
-fog_light_color = Color(0.75, 0.8, 0.85, 1)
-fog_density = 0.0012
+fog_light_color = Color(0.82, 0.78, 0.7, 1)
+fog_density = 0.0016
 
 [node name="Main" type="Node3D"]
 script = ExtResource("2")
@@ -32,7 +37,10 @@ environment = SubResource("env")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.7, -0.5, 0.5, 0, 0.7, 0.7, -0.7, -0.5, 0.5, 0, 60, 0)
+light_color = Color(1, 0.96, 0.89, 1)
+light_energy = 1.15
 shadow_enabled = true
+directional_shadow_max_distance = 350.0
 
 [node name="Map" type="Node3D" parent="."]
 script = ExtResource("4")
@@ -47,6 +55,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 10)
 far = 2000.0
 script = ExtResource("3")
 target_path = NodePath("../Car")
+
+
 
 [node name="HUD" type="CanvasLayer" parent="."]
 
@@ -66,4 +76,16 @@ offset_bottom = 150.0
 theme_override_font_sizes/font_size = 16
 text = "Central Kathmandu (real OpenStreetMap roads)
 W / Up = accelerate    S / Down = brake / reverse
-A D / Left Right = steer    R = reset to start"
+A D / Left Right = steer    R = reset to start
+Search a place above, then follow the arrow / beacon"
+
+
+
+[node name="Navigation" type="CanvasLayer" parent="."]
+script = ExtResource("6")
+car_path = NodePath("../Car")
+world_root_path = NodePath("..")
+
+[node name="Minimap" type="CanvasLayer" parent="."]
+script = ExtResource("8")
+car_path = NodePath("../Car")
