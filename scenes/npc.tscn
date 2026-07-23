@@ -1,0 +1,27 @@
+[gd_scene load_steps=5 format=3 uid="uid://npc_racing_pedestrian"]
+
+[ext_resource type="Script" path="res://scripts/npc.gd" id="1"]
+
+[sub_resource type="StandardMaterial3D" id="mat_npc"]
+albedo_color = Color(0.25, 0.55, 0.75, 1)
+roughness = 0.8
+
+[sub_resource type="CapsuleMesh" id="mesh_npc"]
+material = SubResource("mat_npc")
+radius = 0.25
+height = 1.4
+
+[sub_resource type="CapsuleShape3D" id="shape_npc"]
+radius = 0.25
+height = 1.4
+
+[node name="NPC" type="CharacterBody3D"]
+script = ExtResource("1")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+mesh = SubResource("mesh_npc")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+shape = SubResource("shape_npc")

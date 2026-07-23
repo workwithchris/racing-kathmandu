@@ -8,6 +8,9 @@ extends Node3D
 @export var camera_path: NodePath
 ## Vertical exaggeration for the terrain (1.0 = true-to-life).
 @export var height_scale := 1.0
+## Pedestrian NPC scene spawned along roads.
+@export var npc_scene: PackedScene
+@export var npc_count := 80
 
 # Kathmandu-ish painted-house / brick palette: earthy, warm, colourful.
 const PALETTE := [
@@ -50,6 +53,7 @@ func _ready() -> void:
 	_build_buildings(data.get("buildings", []))
 	_build_trees(data.get("trees", []))
 	_place_start(_central_spawn(roads))
+	_spawn_npcs(roads)
 
 # --- terrain heightmap ------------------------------------------------------
 
@@ -63,6 +67,10 @@ func _load_terrain(t: Dictionary) -> void:
 		_h.append(float(v) * height_scale)
 	for v in _h:
 		_hmax = maxf(_hmax, v)
+
+## Public height query wrapper used by other systems (NPCs, etc.).
+func height_at(x: float, z: float) -> float:
+	return _height_at(x, z)
 
 ## Height sampled with the SAME triangle split as the terrain mesh (a,b,c)/(a,c,d),
 ## so draped roads/buildings sit exactly on the rendered surface (not buried).
@@ -501,3 +509,51 @@ func _place_start(spawn: Dictionary) -> void:
 		var cam := get_node_or_null(camera_path)
 		if cam is Node3D:
 			cam.global_position = pos + z_axis * 8.0 + Vector3.UP * 4.0
+
+func _spawn_npcs(roads: Array) -> void:
+	if npc_scene == null:
+		return
+	randomize()
+	var container := Node3D.new()
+	container.name = "NPCs"
+	add_child(container)
+	var candidates: Array = []
+	for r in roads:
+		if float(r.get("w", 0.0)) >= 5.0 and r["p"].size() >= 2:
+			candidates.append(r)
+	if candidates.is_empty():
+		return
+	var spawned := 0
+	var attempts := 0
+	var max_attempts := npc_count * 4
+	while spawned < npc_count and attempts < max_attempts:
+		attempts += 1
+		var r: Dictionary = candidates[randi() % candidates.size()]
+		var pts: Array = r["p"]
+		var idx := randi() % (pts.size() - 1)
+		var ax: float = pts[idx][0]
+		var az: float = pts[idx][1]
+		var bx: float = pts[idx + 1][0]
+		var bz: float = pts[idx + 1][1]
+		var dx := bx - ax
+		var dz := bz - az
+		var L := sqrt(dx * dx + dz * dz)
+		if L < 1.0:
+			continue
+		var ux := dx / L
+		var uz := dz / L
+		var sx := uz
+		var sz := -ux
+		if randf() < 0.5:
+			sx = -sx
+			sz = -sz
+		var hw := float(r["w"]) * 0.5 + 0.8
+		var off := hw + 1.0
+		var ya := height_at(ax + sx * off, az + sz * off)
+		var yb := height_at(bx + sx * off, bz + sz * off)
+		var npc = npc_scene.instantiate()
+		npc.target_a = Vector3(ax + sx * off, ya, az + sz * off)
+		npc.target_b = Vector3(bx + sx * off, yb, bz + sz * off)
+		container.add_child(npc)
+		npc.position = npc.target_a
+		spawned += 1

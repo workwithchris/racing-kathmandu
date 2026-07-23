@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3 uid="uid://racing_kathmandu_world"]
+[gd_scene load_steps=9 format=3 uid="uid://racing_kathmandu_world"]
 
 [ext_resource type="PackedScene" path="res://scenes/car.tscn" id="1"]
 [ext_resource type="Script" path="res://scripts/main.gd" id="2"]
@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://scripts/kathmandu_map.gd" id="4"]
 [ext_resource type="Script" path="res://scripts/navigation.gd" id="6"]
 [ext_resource type="Script" path="res://scripts/minimap.gd" id="8"]
+[ext_resource type="PackedScene" path="res://scenes/npc.tscn" id="9"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.42, 0.55, 0.72, 1)
@@ -46,6 +47,7 @@ directional_shadow_max_distance = 350.0
 script = ExtResource("4")
 car_path = NodePath("../Car")
 camera_path = NodePath("../ChaseCamera")
+npc_scene = ExtResource("9")
 
 [node name="Car" parent="." instance=ExtResource("1")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
