@@ -1,0 +1,87 @@
+[gd_scene load_steps=11 format=3 uid="uid://racing_main_world"]
+
+[ext_resource type="PackedScene" path="res://scenes/car.tscn" id="1"]
+[ext_resource type="Script" path="res://scripts/main.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/chase_camera.gd" id="3"]
+[ext_resource type="Script" path="res://scripts/track_builder.gd" id="4"]
+
+[sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
+sky_top_color = Color(0.25, 0.5, 0.82, 1)
+sky_horizon_color = Color(0.72, 0.83, 0.9, 1)
+ground_bottom_color = Color(0.25, 0.28, 0.3, 1)
+ground_horizon_color = Color(0.6, 0.65, 0.7, 1)
+
+[sub_resource type="Sky" id="sky"]
+sky_material = SubResource("sky_mat")
+
+[sub_resource type="Environment" id="env"]
+background_mode = 2
+sky = SubResource("sky")
+ambient_light_source = 3
+ambient_light_energy = 1.0
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="mat_grass"]
+albedo_color = Color(0.19, 0.42, 0.2, 1)
+roughness = 0.95
+
+[sub_resource type="PlaneMesh" id="mesh_ground"]
+material = SubResource("mat_grass")
+size = Vector2(320, 320)
+
+[sub_resource type="BoxShape3D" id="shape_ground"]
+size = Vector3(320, 1, 320)
+
+[node name="Main" type="Node3D"]
+script = ExtResource("2")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.7, -0.5, 0.5, 0, 0.7, 0.7, -0.7, -0.5, 0.5, 0, 40, 0)
+shadow_enabled = true
+
+[node name="Ground" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.05, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Ground"]
+mesh = SubResource("mesh_ground")
+
+[node name="Collision" type="CollisionShape3D" parent="Ground"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+shape = SubResource("shape_ground")
+
+[node name="Track" type="StaticBody3D" parent="."]
+script = ExtResource("4")
+car_path = NodePath("../Car")
+camera_path = NodePath("../ChaseCamera")
+
+[node name="Car" parent="." instance=ExtResource("1")]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 107, 1, 0)
+
+[node name="ChaseCamera" type="Camera3D" parent="."]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 107, 5, -10)
+script = ExtResource("3")
+target_path = NodePath("../Car")
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="SpeedLabel" type="Label" parent="HUD"]
+offset_left = 20.0
+offset_top = 14.0
+offset_right = 320.0
+offset_bottom = 60.0
+theme_override_font_sizes/font_size = 34
+text = "0 km/h"
+
+[node name="HelpLabel" type="Label" parent="HUD"]
+offset_left = 20.0
+offset_top = 62.0
+offset_right = 420.0
+offset_bottom = 150.0
+theme_override_font_sizes/font_size = 16
+text = "W / Up = accelerate
+S / Down = brake / reverse
+A D / Left Right = steer
+R = reset car"
