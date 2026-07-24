@@ -11,6 +11,12 @@ extends Node3D
 ## Pedestrian NPC scene spawned along roads.
 @export var npc_scene: PackedScene
 @export var npc_count := 80
+## Traffic vehicle scene spawned driving along roads.
+@export var traffic_scene: PackedScene
+@export var traffic_count := 40
+
+const BUILDING_SHADER := preload("res://shaders/building.gdshader")
+const ROAD_SHADER := preload("res://shaders/road.gdshader")
 
 # Kathmandu-ish painted-house / brick palette: earthy, warm, colourful.
 const PALETTE := [
@@ -54,6 +60,7 @@ func _ready() -> void:
 	_build_trees(data.get("trees", []))
 	_place_start(_central_spawn(roads))
 	_spawn_npcs(roads)
+	_spawn_traffic(roads)
 
 # --- terrain heightmap ------------------------------------------------------
 
@@ -180,13 +187,10 @@ func _build_roads(roads: Array) -> void:
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for r in roads:
 		_ribbon(st, r["p"], float(r["w"]) * 0.5, 0.11)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = _asphalt_texture()
-	mat.uv1_triplanar = true
-	mat.uv1_scale = Vector3(0.3, 0.3, 0.3)
-	mat.albedo_color = Color(0.14, 0.14, 0.15)
-	mat.roughness = 0.92
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mat := ShaderMaterial.new()
+	mat.shader = ROAD_SHADER
+	mat.set_shader_parameter("asphalt_tex", _asphalt_texture())
+	mat.set_shader_parameter("uv_scale", Vector2(0.3, 0.3))
 	st.set_material(mat)
 	st.generate_normals()
 	_add_mesh(st.commit())
@@ -318,8 +322,13 @@ func _build_buildings(buildings: Array) -> void:
 				continue
 			var at := Vector3(p0[0], top, p0[1])
 			var bt := Vector3(p1[0], top, p1[1])
-			_ctri(walls, faces, col, a0, at, bt)
-			_ctri(walls, faces, col, a0, bt, b0)
+			_wall_tri(walls, faces, col, a0, at, bt, base, top)
+			_wall_tri(walls, faces, col, a0, bt, b0, base, top)
+			# Reversed-winding collision faces too: walls are a single zero-thickness
+			# sheet, so a body that tunnels through at high speed needs a normal
+			# facing the OTHER way as well, or physics has no way to push it back out.
+			faces.push_back(a0); faces.push_back(bt); faces.push_back(at)
+			faces.push_back(a0); faces.push_back(b0); faces.push_back(bt)
 
 		if n <= 12:
 			var poly := PackedVector2Array()
@@ -331,13 +340,10 @@ func _build_buildings(buildings: Array) -> void:
 					roofs.set_color(roof_col)
 					roofs.add_vertex(Vector3(poly[idx[m]].x, top, poly[idx[m]].y))
 
-	var wall_mat := StandardMaterial3D.new()
-	wall_mat.albedo_texture = _window_texture()
-	wall_mat.uv1_triplanar = true
-	wall_mat.uv1_scale = Vector3(0.125, 0.125, 0.125)
-	wall_mat.vertex_color_use_as_albedo = true
-	wall_mat.roughness = 0.85
-	wall_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var wall_mat := ShaderMaterial.new()
+	wall_mat.shader = BUILDING_SHADER
+	wall_mat.set_shader_parameter("window_tex", _window_texture())
+	wall_mat.set_shader_parameter("uv_scale", Vector3(0.125, 0.125, 0.125))
 	walls.set_material(wall_mat)
 	walls.generate_normals()
 	_add_mesh(walls.commit())
@@ -366,17 +372,45 @@ func _build_trees(trees: Array) -> void:
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = _tree_mesh()
 	mm.instance_count = trees.size()
+	var faces := PackedVector3Array()
 	for i in range(trees.size()):
 		var t: Array = trees[i]
 		var x: float = t[0]
 		var z: float = t[1]
 		var s: float = t[2] if t.size() > 2 else 1.0
 		var basis := Basis(Vector3.UP, _hash01(x + z) * TAU).scaled(Vector3(s, s, s))
-		mm.set_instance_transform(i, Transform3D(basis, Vector3(x, _height_at(x, z), z)))
+		var y := _height_at(x, z)
+		mm.set_instance_transform(i, Transform3D(basis, Vector3(x, y, z)))
+		_add_trunk_collision(faces, x, y, z, 0.45 * s, 3.0 * s)
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mmi)
+
+	var body := StaticBody3D.new()
+	add_child(body)
+	var shape := ConcavePolygonShape3D.new()
+	shape.set_faces(faces)
+	var cs := CollisionShape3D.new()
+	cs.shape = shape
+	body.add_child(cs)
+
+## Adds an axis-aligned box (double-sided, so it can't be tunnelled through and
+## always has a valid push-out normal) as a trunk obstacle for one tree.
+func _add_trunk_collision(faces: PackedVector3Array, x: float, y: float, z: float, hw: float, h: float) -> void:
+	var corners: Array[Vector3] = [
+		Vector3(x - hw, y, z - hw), Vector3(x + hw, y, z - hw),
+		Vector3(x + hw, y, z + hw), Vector3(x - hw, y, z + hw),
+	]
+	for i in range(4):
+		var a := corners[i]
+		var b := corners[(i + 1) % 4]
+		var at := a + Vector3.UP * h
+		var bt := b + Vector3.UP * h
+		faces.push_back(a); faces.push_back(at); faces.push_back(bt)
+		faces.push_back(a); faces.push_back(bt); faces.push_back(b)
+		faces.push_back(a); faces.push_back(bt); faces.push_back(at)
+		faces.push_back(a); faces.push_back(b); faces.push_back(bt)
 
 func _tree_mesh() -> ArrayMesh:
 	var st := SurfaceTool.new()
@@ -406,9 +440,11 @@ func _billboard(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3)
 
 # --- procedural textures ----------------------------------------------------
 
+## RGB = wall/frame/glass colour. A = 1.0 on glass pixels only, used by
+## building.gdshader as a mask for per-window specular/emission variation.
 func _window_texture() -> ImageTexture:
 	var s := 128
-	var img := Image.create_empty(s, s, false, Image.FORMAT_RGB8)
+	var img := Image.create_empty(s, s, false, Image.FORMAT_RGBA8)
 	var wall := Color(0.92, 0.90, 0.86)
 	var glass := Color(0.16, 0.19, 0.24)   # darker glass reads as real windows
 	var frame := Color(0.55, 0.52, 0.48)
@@ -418,6 +454,7 @@ func _window_texture() -> ImageTexture:
 			var cx := x % 32
 			var cy := y % 32
 			var col := wall
+			var is_glass := false
 			if cy < 4:
 				col = band
 			elif cx >= 9 and cx <= 23 and cy >= 9 and cy <= 26:
@@ -426,7 +463,8 @@ func _window_texture() -> ImageTexture:
 					col = frame
 				else:
 					col = glass
-			img.set_pixel(x, y, col)
+					is_glass = true
+			img.set_pixel(x, y, Color(col.r, col.g, col.b, 1.0 if is_glass else 0.0))
 	return ImageTexture.create_from_image(img)
 
 func _tree_texture() -> ImageTexture:
@@ -469,6 +507,15 @@ func _ctri(st: SurfaceTool, faces: PackedVector3Array, col: Color, a: Vector3, b
 	st.set_color(col); st.add_vertex(a)
 	st.set_color(col); st.add_vertex(b)
 	st.set_color(col); st.add_vertex(c)
+	faces.push_back(a); faces.push_back(b); faces.push_back(c)
+
+## Same as _ctri but stows each vertex's 0..1 base-to-roof height fraction in
+## COLOR.a, which building.gdshader reads to fade grime/AO in toward the base.
+func _wall_tri(st: SurfaceTool, faces: PackedVector3Array, col: Color, a: Vector3, b: Vector3, c: Vector3, base: float, top: float) -> void:
+	var span := maxf(top - base, 0.001)
+	st.set_color(Color(col.r, col.g, col.b, clampf((a.y - base) / span, 0.0, 1.0))); st.add_vertex(a)
+	st.set_color(Color(col.r, col.g, col.b, clampf((b.y - base) / span, 0.0, 1.0))); st.add_vertex(b)
+	st.set_color(Color(col.r, col.g, col.b, clampf((c.y - base) / span, 0.0, 1.0))); st.add_vertex(c)
 	faces.push_back(a); faces.push_back(b); faces.push_back(c)
 
 func _hash01(v: float) -> float:
@@ -557,3 +604,68 @@ func _spawn_npcs(roads: Array) -> void:
 		container.add_child(npc)
 		npc.position = npc.target_a
 		spawned += 1
+
+# --- traffic vehicles --------------------------------------------------------
+
+func _spawn_traffic(roads: Array) -> void:
+	if traffic_scene == null:
+		return
+	var container := Node3D.new()
+	container.name = "Traffic"
+	add_child(container)
+	var candidates: Array = []
+	for r in roads:
+		if float(r.get("w", 0.0)) >= 6.0 and r["p"].size() >= 2:
+			candidates.append(r)
+	if candidates.is_empty():
+		return
+	var spawned := 0
+	var attempts := 0
+	var max_attempts := traffic_count * 4
+	while spawned < traffic_count and attempts < max_attempts:
+		attempts += 1
+		var r: Dictionary = candidates[randi() % candidates.size()]
+		var lane := _lane_path(r, randf() < 0.5)
+		if lane.size() < 2:
+			continue
+		var car = traffic_scene.instantiate()
+		car.path = lane
+		car.speed = randf_range(4.0, 9.0)
+		container.add_child(car)
+		car.global_position = lane[0]
+		spawned += 1
+
+## Builds a lane-offset waypoint path (draped onto the terrain) that follows one
+## side of a road's full centerline, so traffic drives along real streets rather
+## than a single straight segment.
+func _lane_path(r: Dictionary, side_positive: bool) -> PackedVector3Array:
+	var pts: Array = r["p"]
+	var hw: float = float(r["w"]) * 0.5
+	var lane_off: float = maxf(hw * 0.5, 1.2)
+	var out := PackedVector3Array()
+	var n := pts.size()
+	for i in range(n):
+		var ax: float = pts[i][0]
+		var az: float = pts[i][1]
+		var dx: float
+		var dz: float
+		if i < n - 1:
+			dx = pts[i + 1][0] - ax
+			dz = pts[i + 1][1] - az
+		else:
+			dx = ax - pts[i - 1][0]
+			dz = az - pts[i - 1][1]
+		var L := sqrt(dx * dx + dz * dz)
+		if L < 0.01:
+			continue
+		var ux := dx / L
+		var uz := dz / L
+		var sx := uz
+		var sz := -ux
+		if not side_positive:
+			sx = -sx
+			sz = -sz
+		var ox := ax + sx * lane_off
+		var oz := az + sz * lane_off
+		out.append(Vector3(ox, _height_at(ox, oz) + 0.05, oz))
+	return out

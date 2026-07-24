@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3 uid="uid://racing_kathmandu_world"]
+[gd_scene load_steps=14 format=3 uid="uid://racing_kathmandu_world"]
 
 [ext_resource type="PackedScene" path="res://scenes/car.tscn" id="1"]
 [ext_resource type="Script" path="res://scripts/main.gd" id="2"]
@@ -7,12 +7,18 @@
 [ext_resource type="Script" path="res://scripts/navigation.gd" id="6"]
 [ext_resource type="Script" path="res://scripts/minimap.gd" id="8"]
 [ext_resource type="PackedScene" path="res://scenes/npc.tscn" id="9"]
+[ext_resource type="PackedScene" path="res://scenes/traffic_car.tscn" id="10"]
+[ext_resource type="Script" path="res://scripts/speed_blur.gd" id="11"]
+[ext_resource type="Shader" path="res://shaders/speed_blur.gdshader" id="12"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
-sky_top_color = Color(0.42, 0.55, 0.72, 1)
-sky_horizon_color = Color(0.82, 0.79, 0.72, 1)
-ground_bottom_color = Color(0.42, 0.4, 0.37, 1)
-ground_horizon_color = Color(0.78, 0.75, 0.69, 1)
+sky_top_color = Color(0.38, 0.42, 0.48, 1)
+sky_horizon_color = Color(0.72, 0.62, 0.52, 1)
+sky_curve = 0.15
+sun_angle_max = 4.0
+sun_curve = 0.1
+ground_bottom_color = Color(0.3, 0.28, 0.26, 1)
+ground_horizon_color = Color(0.68, 0.6, 0.5, 1)
 
 [sub_resource type="Sky" id="sky"]
 sky_material = SubResource("sky_mat")
@@ -21,14 +27,52 @@ sky_material = SubResource("sky_mat")
 background_mode = 2
 sky = SubResource("sky")
 ambient_light_source = 3
-ambient_light_energy = 0.9
-tonemap_mode = 2
+ambient_light_energy = 0.6
+tonemap_mode = 4
+tonemap_exposure = 1.0
+tonemap_white = 1.0
+adjustment_enabled = true
+adjustment_brightness = 1.0
+adjustment_contrast = 1.18
+adjustment_saturation = 0.72
 ssao_enabled = true
-ssao_intensity = 1.6
-ssao_radius = 3.0
+ssao_radius = 2.2
+ssao_intensity = 2.2
+ssao_power = 1.5
+ssil_enabled = true
+ssil_radius = 4.0
+ssil_intensity = 1.6
+ssr_enabled = false
+glow_enabled = true
+glow_blend_mode = 1
+glow_intensity = 0.55
+glow_bloom = 0.05
+glow_hdr_threshold = 1.0
+glow_hdr_scale = 2.0
 fog_enabled = true
-fog_light_color = Color(0.82, 0.78, 0.7, 1)
-fog_density = 0.0016
+fog_light_color = Color(0.62, 0.56, 0.5, 1)
+fog_light_energy = 1.0
+fog_sun_scatter = 0.15
+fog_density = 0.0007
+fog_aerial_perspective = 0.12
+fog_sky_affect = 0.25
+volumetric_fog_enabled = true
+volumetric_fog_density = 0.006
+volumetric_fog_albedo = Color(0.75, 0.7, 0.62, 1)
+volumetric_fog_anisotropy = 0.35
+volumetric_fog_length = 120.0
+volumetric_fog_detail_spread = 2.0
+volumetric_fog_ambient_inject = 0.15
+volumetric_fog_sky_affect = 1.0
+
+[sub_resource type="CameraAttributesPractical" id="cam_attr"]
+dof_blur_far_enabled = false
+auto_exposure_enabled = true
+auto_exposure_speed = 1.5
+auto_exposure_scale = 0.5
+
+[sub_resource type="ShaderMaterial" id="blur_mat"]
+shader = ExtResource("12")
 
 [node name="Main" type="Node3D"]
 script = ExtResource("2")
@@ -37,17 +81,29 @@ script = ExtResource("2")
 environment = SubResource("env")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.7, -0.5, 0.5, 0, 0.7, 0.7, -0.7, -0.5, 0.5, 0, 60, 0)
-light_color = Color(1, 0.96, 0.89, 1)
-light_energy = 1.15
+position = Vector3(0, 60, 0)
+rotation_degrees = Vector3(-15, -50, 0)
+light_color = Color(1.0, 0.82, 0.62, 1)
+light_energy = 1.4
+light_volumetric_fog_energy = 1.0
 shadow_enabled = true
-directional_shadow_max_distance = 350.0
+shadow_bias = 0.03
+shadow_normal_bias = 1.5
+shadow_blur = 1.5
+directional_shadow_mode = 2
+directional_shadow_split_1 = 0.05
+directional_shadow_split_2 = 0.15
+directional_shadow_split_3 = 0.4
+directional_shadow_blend_splits = true
+directional_shadow_max_distance = 400.0
+directional_shadow_fade_start = 0.85
 
 [node name="Map" type="Node3D" parent="."]
 script = ExtResource("4")
 car_path = NodePath("../Car")
 camera_path = NodePath("../ChaseCamera")
 npc_scene = ExtResource("9")
+traffic_scene = ExtResource("10")
 
 [node name="Car" parent="." instance=ExtResource("1")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
@@ -55,6 +111,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
 [node name="ChaseCamera" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 10)
 far = 2000.0
+attributes = SubResource("cam_attr")
 script = ExtResource("3")
 target_path = NodePath("../Car")
 
@@ -91,3 +148,14 @@ world_root_path = NodePath("..")
 [node name="Minimap" type="CanvasLayer" parent="."]
 script = ExtResource("8")
 car_path = NodePath("../Car")
+
+[node name="SpeedBlur" type="CanvasLayer" parent="."]
+layer = 0
+
+[node name="Blur" type="ColorRect" parent="SpeedBlur"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+material = SubResource("blur_mat")
+script = ExtResource("11")
+car_path = NodePath("../../Car")
