@@ -11,6 +11,7 @@
 [ext_resource type="PackedScene" path="res://scenes/traffic_car.tscn" id="10"]
 [ext_resource type="Script" path="res://scripts/speed_blur.gd" id="11"]
 [ext_resource type="Shader" path="res://shaders/speed_blur.gdshader" id="12"]
+[ext_resource type="PackedScene" path="res://scenes/pause_menu.tscn" id="14"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.38, 0.42, 0.48, 1)
@@ -143,6 +144,7 @@ text = "Central Kathmandu (real OpenStreetMap roads)
 On foot: W A S D / arrows = walk, Space = jump
 E = get in / out of the car
 Driving: W / Up = accelerate, S / Down = brake, A D = steer, R = reset
+ESC = pause menu / full map
 Search a place above, then follow the arrow / beacon"
 
 [node name="PromptLabel" type="Label" parent="HUD"]
@@ -184,3 +186,6 @@ mouse_filter = 2
 material = SubResource("blur_mat")
 script = ExtResource("11")
 car_path = NodePath("../../Car")
+
+[node name="PauseMenu" parent="." instance=ExtResource("14")]
+tracked_path = NodePath("../Player")

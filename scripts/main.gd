@@ -7,6 +7,7 @@ extends Node3D
 @onready var _player: CharacterBody3D = $Player
 @onready var _camera = $ChaseCamera
 @onready var _map = $Map
+@onready var _pause_menu = $PauseMenu
 @onready var _speed_label: Label = $HUD/SpeedLabel
 @onready var _prompt_label: Label = $HUD/PromptLabel
 
@@ -61,6 +62,7 @@ func _enter_car() -> void:
 	_car.angular_velocity = Vector3.ZERO
 	_camera.set_target(_car, CAR_CAM_DISTANCE, CAR_CAM_HEIGHT, CAR_CAM_LOOK_HEIGHT)
 	_map.set_tracked(_car)
+	_pause_menu.set_tracked(_car)
 
 func _exit_car() -> void:
 	_driving = false
@@ -86,6 +88,7 @@ func _exit_car() -> void:
 
 	_camera.set_target(_player, FOOT_CAM_DISTANCE, FOOT_CAM_HEIGHT, FOOT_CAM_LOOK_HEIGHT, false)
 	_map.set_tracked(_player)
+	_pause_menu.set_tracked(_player)
 
 func _reset_car() -> void:
 	_car.global_transform = _spawn_transform

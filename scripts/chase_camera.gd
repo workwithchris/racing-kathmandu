@@ -86,6 +86,8 @@ func _facing_yaw(node: Node3D) -> float:
 	return atan2(back.x, back.z)
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Escape is owned by pause_menu.gd (opens the pause overlay and releases
+	# the mouse itself); this only handles look input while actually captured.
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		if _follow_facing:
 			_yaw_offset -= event.relative.x * mouse_sensitivity
@@ -94,8 +96,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity,
 				deg_to_rad(min_pitch_deg), deg_to_rad(max_pitch_deg))
 		_idle_time = 0.0
-	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else Input.MOUSE_MODE_CAPTURED
 
 func _physics_process(delta: float) -> void:
 	if _target == null:
