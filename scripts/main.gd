@@ -29,10 +29,8 @@ func _ready() -> void:
 	# Player starts on foot; the car sits parked until they walk up and get in.
 	_player.active = true
 	_car.active = false
-	_camera.set_target(_player, FOOT_CAM_DISTANCE, FOOT_CAM_HEIGHT, FOOT_CAM_LOOK_HEIGHT)
+	_camera.set_target(_player, FOOT_CAM_DISTANCE, FOOT_CAM_HEIGHT, FOOT_CAM_LOOK_HEIGHT, false)
 	_map.set_tracked(_player)
-
-func _process(_delta: float) -> void:
 	if _driving:
 		var kmh := int(round(_car.linear_velocity.length() * 3.6))
 		_speed_label.text = "%d km/h" % kmh
@@ -84,7 +82,7 @@ func _exit_car() -> void:
 	_player.global_transform = Transform3D(flat_basis, exit_pos)
 	_player.active = true
 
-	_camera.set_target(_player, FOOT_CAM_DISTANCE, FOOT_CAM_HEIGHT, FOOT_CAM_LOOK_HEIGHT)
+	_camera.set_target(_player, FOOT_CAM_DISTANCE, FOOT_CAM_HEIGHT, FOOT_CAM_LOOK_HEIGHT, false)
 	_map.set_tracked(_player)
 
 func _reset_car() -> void:
