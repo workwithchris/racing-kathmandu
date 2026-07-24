@@ -36,6 +36,27 @@ func _ready() -> void:
 	if capture_mouse:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
+## Retargets the camera at runtime (e.g. switching between the on-foot player
+## and the car). Snaps straight to the new framing instead of lerping from
+## wherever the old target left off, so the swap doesn't visibly swoop.
+func set_target(node: Node3D, cam_distance: float, cam_height: float, cam_look_height: float) -> void:
+	_target = node
+	distance = cam_distance
+	height = cam_height
+	look_height = cam_look_height
+	_yaw_offset = 0.0
+	if _target:
+		var back := _target.global_transform.basis.z
+		back.y = 0.0
+		if back.length() < 0.001:
+			back = Vector3.BACK
+		back = back.normalized()
+		var yaw := atan2(back.x, back.z)
+		var horiz := cos(_pitch)
+		var dir := Vector3(sin(yaw) * horiz, sin(_pitch), cos(yaw) * horiz)
+		global_position = _target.global_position + dir * distance + Vector3.UP * height
+		look_at(_target.global_position + Vector3.UP * look_height, Vector3.UP)
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_yaw_offset -= event.relative.x * mouse_sensitivity

@@ -9,6 +9,7 @@ extends Node3D
 
 @export var manifest_path := "res://data/manifest.json"
 @export var car_path: NodePath
+@export var player_path: NodePath
 @export var camera_path: NodePath
 ## Vertical exaggeration for the terrain (1.0 = true-to-life).
 @export var height_scale := 1.0
@@ -61,7 +62,9 @@ const PALETTE := [
 ]
 
 var _chunk_size := 1000.0
-var _car: Node3D
+## Whichever entity the world streams/spawns around -- the on-foot player by
+## default, or the car while the player is driving it (see main.gd).
+var _tracked: Node3D
 
 # Terrain (global, shared, read-only once built -- safe to read from worker threads).
 var _nx := 0
@@ -77,6 +80,8 @@ var _hmax := 1.0
 var _window_tex: ImageTexture
 var _asphalt_tex: ImageTexture
 var _tree_mesh_res: ArrayMesh
+var _tank_mesh_res: Mesh
+var _rebar_mesh_res: ArrayMesh
 
 # Streaming state.
 var _loaded: Dictionary = {}    # Vector2i -> Node3D chunk container
@@ -84,7 +89,8 @@ var _pending: Dictionary = {}   # Vector2i -> true (in-flight async load)
 var _stream_timer := 0.0
 
 func _ready() -> void:
-	_car = get_node_or_null(car_path)
+	var player := get_node_or_null(player_path)
+	_tracked = player if player else get_node_or_null(car_path)
 
 	var mf := FileAccess.open(manifest_path, FileAccess.READ)
 	if mf == null:
@@ -97,6 +103,8 @@ func _ready() -> void:
 	_window_tex = _window_texture()
 	_asphalt_tex = _asphalt_texture()
 	_tree_mesh_res = _tree_mesh()
+	_tank_mesh_res = _water_tank_mesh()
+	_rebar_mesh_res = _rebar_bundle_mesh()
 
 	_load_terrain(String(manifest.get("terrain", "res://data/terrain.json")))
 	_build_terrain()
@@ -113,12 +121,17 @@ func _ready() -> void:
 	_place_start(_central_spawn(initial_roads))
 
 func _process(delta: float) -> void:
-	if _car == null:
+	if _tracked == null:
 		return
 	_stream_timer -= delta
 	if _stream_timer <= 0.0:
 		_stream_timer = stream_interval
 		_update_streaming()
+
+## Called by main.gd when control switches between the on-foot player and the
+## car, so streaming/unloading keeps following whichever one is now "the player".
+func set_tracked(node: Node3D) -> void:
+	_tracked = node
 
 # --- chunk streaming ---------------------------------------------------------
 
@@ -129,13 +142,13 @@ func _chunk_center(c: Vector2i) -> Vector2:
 	return Vector2((c.x + 0.5) * _chunk_size, (c.y + 0.5) * _chunk_size)
 
 func _update_streaming() -> void:
-	var cp := _car.global_position
-	var car_coord := _coord_at(cp.x, cp.z)
+	var cp := _tracked.global_position
+	var tracked_coord := _coord_at(cp.x, cp.z)
 	var r := int(ceil(load_radius / _chunk_size)) + 1
 
 	for dz in range(-r, r + 1):
 		for dx in range(-r, r + 1):
-			var c := car_coord + Vector2i(dx, dz)
+			var c := tracked_coord + Vector2i(dx, dz)
 			if _loaded.has(c) or _pending.has(c):
 				continue
 			var center := _chunk_center(c)
@@ -198,19 +211,20 @@ func _attach_chunk(coord: Vector2i, built: Dictionary) -> void:
 	root.name = "Chunk_%d_%d" % [coord.x, coord.y]
 	add_child(root)
 
-	for key in ["walls_mesh", "roofs_mesh", "curbs_mesh", "roads_mesh", "markings_mesh", "greens_mesh"]:
+	for key in ["walls_mesh", "roofs_mesh", "curbs_mesh", "roads_mesh", "markings_mesh", "footpaths_mesh", "greens_mesh"]:
 		var mesh: Mesh = built.get(key)
 		if mesh != null:
 			var mi := MeshInstance3D.new()
 			mi.mesh = mesh
 			root.add_child(mi)
 
-	var mm: MultiMesh = built.get("tree_multimesh")
-	if mm != null:
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		root.add_child(mmi)
+	for mm_key in ["tree_multimesh", "tank_multimesh", "rebar_multimesh"]:
+		var mm: MultiMesh = built.get(mm_key)
+		if mm != null:
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			root.add_child(mmi)
 
 	var faces: PackedVector3Array = built.get("collision_faces", PackedVector3Array())
 	if faces.size() > 0:
@@ -250,6 +264,8 @@ func _build_chunk_meshes(data: Dictionary, coord: Vector2i) -> Dictionary:
 	result["walls_mesh"] = wb.get("walls")
 	result["roofs_mesh"] = wb.get("roofs")
 	result["prop"] = wb.get("prop")
+	result["tank_multimesh"] = wb.get("tanks")
+	result["rebar_multimesh"] = wb.get("rebar")
 
 	var roads: Array = data.get("roads", [])
 	result["curbs_mesh"] = _build_curbs_mesh(roads)
@@ -257,12 +273,15 @@ func _build_chunk_meshes(data: Dictionary, coord: Vector2i) -> Dictionary:
 	result["markings_mesh"] = _build_markings_mesh(roads)
 	result["greens_mesh"] = _build_greens_mesh(data.get("greens", []))
 
+	var footpaths: Array = data.get("footpaths", [])
+	result["footpaths_mesh"] = _build_footpaths_mesh(footpaths)
+
 	var trees: Array = data.get("trees", [])
 	if not trees.is_empty():
 		result["tree_multimesh"] = _build_trees_multimesh(trees, faces)
 
 	result["collision_faces"] = faces
-	result["npc_spawns"] = _npc_spawn_points(roads, data.get("buildings", []), rng)
+	result["npc_spawns"] = _npc_spawn_points(roads, footpaths, data.get("buildings", []), rng)
 	result["traffic_paths"] = _traffic_lane_paths(roads, rng)
 	return result
 
@@ -274,6 +293,14 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 	var roofs := SurfaceTool.new()
 	roofs.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var any_roof := false
+
+	# Roof clutter (water tanks, rebar) is instanced via MultiMesh rather than
+	# baked into the roof surface, same reasoning as the tree billboards.
+	var tank_xf: Array[Transform3D] = []
+	var tank_col: Array[Color] = []
+	var rebar_xf: Array[Transform3D] = []
+	const TANK_BLACK := Color(0.045, 0.05, 0.055)
+	const TANK_BLUE := Color(0.1, 0.24, 0.42)
 
 	# Pick at most one eligible (simple-footprint) building in this chunk to
 	# swap for the real prop model instead of procedural extrusion.
@@ -333,6 +360,12 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 		col = col.lerp(Color(0.5, 0.5, 0.5), 0.05 * _hash01(seed * 3.1))
 		var roof_col := col.darkened(0.4)
 
+		# Most flat-roofed concrete buildings in Kathmandu carry a low parapet
+		# lip around the roofline -- bare unpainted concrete, not the facade colour.
+		var has_parapet: bool = height >= 4.0 and _hash01(seed * 5.3) < 0.72
+		var parapet_h: float = 0.3 + _hash01(seed * 6.1) * 0.28
+		var parapet_col: Color = Color(0.63, 0.61, 0.57).lerp(col, 0.12)
+
 		for i in range(n):
 			var p0: Array = pts[i]
 			var p1: Array = pts[(i + 1) % n]
@@ -350,6 +383,12 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 			faces.push_back(a0); faces.push_back(bt); faces.push_back(at)
 			faces.push_back(a0); faces.push_back(b0); faces.push_back(bt)
 
+			if has_parapet:
+				var pt := Vector3(p0[0], top + parapet_h, p0[1])
+				var pbt := Vector3(p1[0], top + parapet_h, p1[1])
+				_wall_tri(walls, faces, parapet_col, at, pt, pbt, top, top + parapet_h)
+				_wall_tri(walls, faces, parapet_col, at, pbt, bt, top, top + parapet_h)
+
 		if n <= 12:
 			var poly := PackedVector2Array()
 			for i in range(n):
@@ -360,6 +399,32 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 					roofs.set_color(roof_col)
 					roofs.add_vertex(Vector3(poly[idx[m]].x, top, poly[idx[m]].y))
 			any_roof = true
+
+			# Rooftop clutter -- water tanks and exposed rebar bundles -- only on
+			# roofs roomy and tall enough that a couple of props reads as normal
+			# rather than comically oversized.
+			var rminx := INF; var rmaxx := -INF; var rminz := INF; var rmaxz := -INF
+			for p in poly:
+				rminx = minf(rminx, p.x); rmaxx = maxf(rmaxx, p.x)
+				rminz = minf(rminz, p.y); rmaxz = maxf(rmaxz, p.y)
+			var rw := rmaxx - rminx
+			var rd := rmaxz - rminz
+			if height >= 6.0 and rw > 3.5 and rd > 3.5:
+				if _hash01(seed * 7.7) < 0.4:
+					var tcount := 1 + (1 if _hash01(seed * 8.3) < 0.3 else 0)
+					for ti in range(tcount):
+						var tx := rminx + 0.25 * rw + _hash01(seed * (9.1 + ti)) * 0.5 * rw
+						var tz := rminz + 0.25 * rd + _hash01(seed * (10.3 + ti)) * 0.5 * rd
+						var tyaw := _hash01(seed * (11.7 + ti)) * TAU
+						tank_xf.append(Transform3D(Basis(Vector3.UP, tyaw), Vector3(tx, top, tz)))
+						tank_col.append(TANK_BLUE if _hash01(seed * (13.1 + ti)) < 0.18 else TANK_BLACK)
+				if _hash01(seed * 15.9) < 0.28:
+					var rcount := 1 + int(_hash01(seed * 16.5) * 2.0)
+					for ri in range(rcount):
+						var rx := rminx + 0.15 * rw + _hash01(seed * (17.1 + ri)) * 0.7 * rw
+						var rz := rminz + 0.15 * rd + _hash01(seed * (18.3 + ri)) * 0.7 * rd
+						var ryaw := _hash01(seed * (19.7 + ri)) * TAU
+						rebar_xf.append(Transform3D(Basis(Vector3.UP, ryaw), Vector3(rx, top, rz)))
 
 	var wall_mat := ShaderMaterial.new()
 	wall_mat.shader = BUILDING_SHADER
@@ -381,6 +446,27 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 		roofs.set_material(roof_mat)
 		roofs.generate_normals()
 		out["roofs"] = roofs.commit()
+
+	if not tank_xf.is_empty():
+		var tanks_mm := MultiMesh.new()
+		tanks_mm.transform_format = MultiMesh.TRANSFORM_3D
+		tanks_mm.use_colors = true
+		tanks_mm.mesh = _tank_mesh_res
+		tanks_mm.instance_count = tank_xf.size()
+		for i in range(tank_xf.size()):
+			tanks_mm.set_instance_transform(i, tank_xf[i])
+			tanks_mm.set_instance_color(i, tank_col[i])
+		out["tanks"] = tanks_mm
+
+	if not rebar_xf.is_empty():
+		var rebar_mm := MultiMesh.new()
+		rebar_mm.transform_format = MultiMesh.TRANSFORM_3D
+		rebar_mm.mesh = _rebar_mesh_res
+		rebar_mm.instance_count = rebar_xf.size()
+		for i in range(rebar_xf.size()):
+			rebar_mm.set_instance_transform(i, rebar_xf[i])
+		out["rebar"] = rebar_mm
+
 	return out
 
 func _poly_area2(pts: Array, n: int) -> float:
@@ -473,6 +559,30 @@ func _mark_pt(ax: float, az: float, ux: float, uz: float, d: float) -> Vector3:
 	var z := az + uz * d
 	return Vector3(x, _height_at(x, z) + 0.15, z)
 
+## Real OSM sidewalks/footways/steps -- narrow paved strips, raised a hair
+## above the road/terrain with a slightly darker under-edge (same inset-curb
+## trick _build_curbs_mesh uses for roads), stone-toned where it's a stairway.
+func _build_footpaths_mesh(footpaths: Array) -> Variant:
+	if footpaths.is_empty():
+		return null
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var concrete := Color(0.68, 0.64, 0.57)
+	var stone := Color(0.58, 0.52, 0.46)
+	var edge := Color(0.4, 0.38, 0.34)
+	for fp in footpaths:
+		var hw: float = float(fp["w"]) * 0.5
+		var col: Color = stone if bool(fp.get("steps", false)) else concrete
+		_ribbon_colored(st, fp["p"], hw + 0.12, 0.03, edge)
+		_ribbon_colored(st, fp["p"], hw, 0.09, col)
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.roughness = 0.92
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	st.set_material(mat)
+	st.generate_normals()
+	return st.commit()
+
 func _build_greens_mesh(greens: Array) -> Variant:
 	if greens.is_empty():
 		return null
@@ -539,6 +649,53 @@ func _add_trunk_collision(faces: PackedVector3Array, x: float, y: float, z: floa
 		faces.push_back(a); faces.push_back(bt); faces.push_back(at)
 		faces.push_back(a); faces.push_back(b); faces.push_back(bt)
 
+## Squat black-plastic rooftop water tank -- one of the single most common
+## sights on a real Kathmandu skyline. vertex_color_use_as_albedo lets each
+## MultiMesh instance recolour it (mostly black, sometimes blue) cheaply.
+func _water_tank_mesh() -> Mesh:
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.32
+	cyl.bottom_radius = 0.36
+	cyl.height = 0.56
+	cyl.radial_segments = 10
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_color = Color.WHITE
+	mat.roughness = 0.5
+	cyl.material = mat
+	return cyl
+
+## A small cluster of thin rust-toned rods -- the exposed rebar left
+## sticking up from an unfinished top floor, ubiquitous across the city
+## since buildings are commonly left "under construction" indefinitely.
+func _rebar_bundle_mesh() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var offsets: Array[Vector2] = [Vector2(0.0, 0.0), Vector2(0.05, 0.02), Vector2(-0.03, 0.045), Vector2(0.01, -0.05)]
+	var heights: Array[float] = [1.15, 0.92, 1.32, 1.05]
+	var r := 0.018
+	for i in range(offsets.size()):
+		var ox: float = offsets[i].x
+		var oz: float = offsets[i].y
+		var h: float = heights[i]
+		var corners: Array[Vector3] = [
+			Vector3(ox - r, 0.0, oz - r), Vector3(ox + r, 0.0, oz - r),
+			Vector3(ox + r, 0.0, oz + r), Vector3(ox - r, 0.0, oz + r),
+		]
+		for k in range(4):
+			var a: Vector3 = corners[k]
+			var b: Vector3 = corners[(k + 1) % 4]
+			var at := a + Vector3.UP * h
+			var bt := b + Vector3.UP * h
+			_quad(st, a, b, bt, at)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.32, 0.24, 0.17)
+	mat.roughness = 0.85
+	mat.metallic = 0.25
+	st.set_material(mat)
+	st.generate_normals()
+	return st.commit()
+
 func _tree_mesh() -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -595,45 +752,70 @@ func _point_inside_any_building(x: float, z: float, buildings: Array) -> bool:
 			return true
 	return false
 
-func _npc_spawn_points(roads: Array, buildings: Array, rng: RandomNumberGenerator) -> Array:
+## Real sidewalk/footway segments an NPC can walk directly (no synthetic
+## offset needed -- the polyline already *is* the path a pedestrian follows).
+func _footpath_segments(footpaths: Array) -> Array:
+	var segs: Array = []
+	for fp in footpaths:
+		var pts: Array = fp["p"]
+		for i in range(pts.size() - 1):
+			segs.append({"ax": pts[i][0], "az": pts[i][1], "bx": pts[i + 1][0], "bz": pts[i + 1][1]})
+	return segs
+
+func _npc_spawn_points(roads: Array, footpaths: Array, buildings: Array, rng: RandomNumberGenerator) -> Array:
 	if npc_scene == null:
 		return []
-	var candidates: Array = []
+
+	# Prefer real mapped sidewalks/footways; fall back to a synthetic offset
+	# from the road centerline on streets OSM has no footway data for.
+	var foot_segs := _footpath_segments(footpaths)
+	var road_candidates: Array = []
 	for r in roads:
 		if float(r.get("w", 0.0)) >= 5.0 and r["p"].size() >= 2:
-			candidates.append(r)
-	if candidates.is_empty():
+			road_candidates.append(r)
+	if foot_segs.is_empty() and road_candidates.is_empty():
 		return []
+
 	var out: Array = []
 	var attempts := 0
 	var max_attempts := npcs_per_chunk * 12
+	const FOOT_BIAS := 0.85  # chance to pick a real footpath over the synthetic offset, when both exist
 	while out.size() < npcs_per_chunk and attempts < max_attempts:
 		attempts += 1
-		var r: Dictionary = candidates[rng.randi() % candidates.size()]
-		var pts: Array = r["p"]
-		var idx := rng.randi() % (pts.size() - 1)
-		var ax: float = pts[idx][0]
-		var az: float = pts[idx][1]
-		var bx: float = pts[idx + 1][0]
-		var bz: float = pts[idx + 1][1]
-		var dx := bx - ax
-		var dz := bz - az
-		var L := sqrt(dx * dx + dz * dz)
-		if L < 1.0:
-			continue
-		var ux := dx / L
-		var uz := dz / L
-		var sx := uz
-		var sz := -ux
-		if rng.randf() < 0.5:
-			sx = -sx
-			sz = -sz
-		var hw := float(r["w"]) * 0.5 + 0.8
-		var off := hw + 1.0
-		var pax := ax + sx * off
-		var paz := az + sz * off
-		var pbx := bx + sx * off
-		var pbz := bz + sz * off
+		var pax: float; var paz: float; var pbx: float; var pbz: float
+
+		if not foot_segs.is_empty() and (road_candidates.is_empty() or rng.randf() < FOOT_BIAS):
+			var seg: Dictionary = foot_segs[rng.randi() % foot_segs.size()]
+			pax = seg["ax"]; paz = seg["az"]; pbx = seg["bx"]; pbz = seg["bz"]
+			if Vector2(pbx - pax, pbz - paz).length() < 1.0:
+				continue
+		else:
+			var r: Dictionary = road_candidates[rng.randi() % road_candidates.size()]
+			var pts: Array = r["p"]
+			var idx := rng.randi() % (pts.size() - 1)
+			var ax: float = pts[idx][0]
+			var az: float = pts[idx][1]
+			var bx: float = pts[idx + 1][0]
+			var bz: float = pts[idx + 1][1]
+			var dx := bx - ax
+			var dz := bz - az
+			var L := sqrt(dx * dx + dz * dz)
+			if L < 1.0:
+				continue
+			var ux := dx / L
+			var uz := dz / L
+			var sx := uz
+			var sz := -ux
+			if rng.randf() < 0.5:
+				sx = -sx
+				sz = -sz
+			var hw := float(r["w"]) * 0.5 + 0.8
+			var off := hw + 1.0
+			pax = ax + sx * off
+			paz = az + sz * off
+			pbx = bx + sx * off
+			pbz = bz + sz * off
+
 		if _point_inside_any_building(pax, paz, buildings) or _point_inside_any_building(pbx, pbz, buildings):
 			continue
 		var ya := _height_at(pax, paz)
@@ -954,6 +1136,40 @@ func _ribbon(st: SurfaceTool, pts: Array, hw: float, yoff: float) -> void:
 				Vector3(qx - sx, qy, qz - sz), Vector3(qx + sx, qy, qz + sz))
 			d = d2; px = qx; pz = qz; py = qy
 
+## Same terrain-draped ribbon as _ribbon, but per-vertex coloured (for meshes
+## like footpaths that mix a couple of flat-albedo materials in one draw call).
+func _ribbon_colored(st: SurfaceTool, pts: Array, hw: float, yoff: float, col: Color) -> void:
+	for i in range(pts.size() - 1):
+		var ax: float = pts[i][0]
+		var az: float = pts[i][1]
+		var dx: float = pts[i + 1][0] - ax
+		var dz: float = pts[i + 1][1] - az
+		var L := sqrt(dx * dx + dz * dz)
+		if L < 0.01:
+			continue
+		var ux := dx / L
+		var uz := dz / L
+		var sx := uz * hw
+		var sz := -ux * hw
+		var start := -hw
+		var stop := L + hw
+		var n := int(ceil((stop - start) / 4.0))
+		var step := (stop - start) / n
+		var d := start
+		var px := ax + ux * d
+		var pz := az + uz * d
+		var py := _height_at(px, pz) + yoff
+		for k in range(n):
+			var d2 := d + step
+			var qx := ax + ux * d2
+			var qz := az + uz * d2
+			var qy := _height_at(qx, qz) + yoff
+			st.set_color(col)
+			_quad(st,
+				Vector3(px + sx, py, pz + sz), Vector3(px - sx, py, pz - sz),
+				Vector3(qx - sx, qy, qz - sz), Vector3(qx + sx, qy, qz + sz))
+			d = d2; px = qx; pz = qz; py = qy
+
 func _ctri(st: SurfaceTool, faces: PackedVector3Array, col: Color, a: Vector3, b: Vector3, c: Vector3) -> void:
 	st.set_color(col); st.add_vertex(a)
 	st.set_color(col); st.add_vertex(b)
@@ -989,21 +1205,29 @@ func _central_spawn(roads: Array) -> Dictionary:
 				best = {"pos": [p[0], p[1]], "dir": [nx[0] - p[0], nx[1] - p[1]]}
 	return best
 
+## Parks the car at the chosen start point and stands the player a few
+## metres off to its side, facing the same way -- the player starts on foot
+## by default (see main.gd), so the camera framing itself is main.gd's job,
+## done once both nodes below are in their final places.
 func _place_start(spawn: Dictionary) -> void:
 	if spawn.is_empty():
 		return
 	var x: float = spawn["pos"][0]
 	var z: float = spawn["pos"][1]
-	var pos := Vector3(x, _height_at(x, z) + 1.0, z)
 	var travel := Vector3(spawn["dir"][0], 0.0, spawn["dir"][1]).normalized()
+	var z_axis := -travel
+	var x_axis := Vector3.UP.cross(z_axis).normalized()
+
 	var car := get_node_or_null(car_path)
 	if car is Node3D:
-		var z_axis := -travel
-		var x_axis := Vector3.UP.cross(z_axis).normalized()
-		car.global_transform = Transform3D(Basis(x_axis, Vector3.UP, z_axis), pos)
+		var car_pos := Vector3(x, _height_at(x, z) + 1.0, z)
+		car.global_transform = Transform3D(Basis(x_axis, Vector3.UP, z_axis), car_pos)
 		if "linear_velocity" in car:
 			car.linear_velocity = Vector3.ZERO
 			car.angular_velocity = Vector3.ZERO
-		var cam := get_node_or_null(camera_path)
-		if cam is Node3D:
-			cam.global_position = pos + z_axis * 8.0 + Vector3.UP * 4.0
+
+	var player := get_node_or_null(player_path)
+	if player is Node3D:
+		var px := x + x_axis.x * 2.6
+		var pz := z + x_axis.z * 2.6
+		player.global_transform = Transform3D(Basis(x_axis, Vector3.UP, z_axis), Vector3(px, _height_at(px, pz), pz))
