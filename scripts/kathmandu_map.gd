@@ -262,7 +262,7 @@ func _build_chunk_meshes(data: Dictionary, coord: Vector2i) -> Dictionary:
 		result["tree_multimesh"] = _build_trees_multimesh(trees, faces)
 
 	result["collision_faces"] = faces
-	result["npc_spawns"] = _npc_spawn_points(roads, rng)
+	result["npc_spawns"] = _npc_spawn_points(roads, data.get("buildings", []), rng)
 	result["traffic_paths"] = _traffic_lane_paths(roads, rng)
 	return result
 
@@ -373,6 +373,11 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 		var roof_mat := StandardMaterial3D.new()
 		roof_mat.vertex_color_use_as_albedo = true
 		roof_mat.roughness = 0.95
+		# Footprint winding varies per source polygon, so the (x,z)->(x,top,z)
+		# mapping isn't guaranteed to produce an upward-facing normal; disable
+		# culling instead of relying on winding, or roofs vanish from above
+		# and the building reads as open/hollow.
+		roof_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		roofs.set_material(roof_mat)
 		roofs.generate_normals()
 		out["roofs"] = roofs.commit()
@@ -562,7 +567,35 @@ func _billboard(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3)
 
 # --- NPCs / traffic, spawned per chunk instead of once globally --------------
 
-func _npc_spawn_points(roads: Array, rng: RandomNumberGenerator) -> Array:
+## Kathmandu's old-town blocks often have buildings flush against the street
+## (no OSM sidewalk data to size a setback from), so a fixed sidewalk offset
+## regularly lands inside a building footprint -- an NPC spawned there is
+## stuck out of sight inside the walls. Reject those candidates instead.
+func _point_inside_any_building(x: float, z: float, buildings: Array) -> bool:
+	for b in buildings:
+		var pts: Array = b["p"]
+		var n := pts.size()
+		if n < 3:
+			continue
+		var minx := INF; var maxx := -INF; var minz := INF; var maxz := -INF
+		for p in pts:
+			minx = minf(minx, p[0]); maxx = maxf(maxx, p[0])
+			minz = minf(minz, p[1]); maxz = maxf(maxz, p[1])
+		if x < minx or x > maxx or z < minz or z > maxz:
+			continue
+		var inside := false
+		var j := n - 1
+		for i in range(n):
+			var xi: float = pts[i][0]; var zi: float = pts[i][1]
+			var xj: float = pts[j][0]; var zj: float = pts[j][1]
+			if ((zi > z) != (zj > z)) and (x < (xj - xi) * (z - zi) / (zj - zi + 0.0000001) + xi):
+				inside = not inside
+			j = i
+		if inside:
+			return true
+	return false
+
+func _npc_spawn_points(roads: Array, buildings: Array, rng: RandomNumberGenerator) -> Array:
 	if npc_scene == null:
 		return []
 	var candidates: Array = []
@@ -573,7 +606,7 @@ func _npc_spawn_points(roads: Array, rng: RandomNumberGenerator) -> Array:
 		return []
 	var out: Array = []
 	var attempts := 0
-	var max_attempts := npcs_per_chunk * 6
+	var max_attempts := npcs_per_chunk * 12
 	while out.size() < npcs_per_chunk and attempts < max_attempts:
 		attempts += 1
 		var r: Dictionary = candidates[rng.randi() % candidates.size()]
@@ -597,11 +630,17 @@ func _npc_spawn_points(roads: Array, rng: RandomNumberGenerator) -> Array:
 			sz = -sz
 		var hw := float(r["w"]) * 0.5 + 0.8
 		var off := hw + 1.0
-		var ya := _height_at(ax + sx * off, az + sz * off)
-		var yb := _height_at(bx + sx * off, bz + sz * off)
+		var pax := ax + sx * off
+		var paz := az + sz * off
+		var pbx := bx + sx * off
+		var pbz := bz + sz * off
+		if _point_inside_any_building(pax, paz, buildings) or _point_inside_any_building(pbx, pbz, buildings):
+			continue
+		var ya := _height_at(pax, paz)
+		var yb := _height_at(pbx, pbz)
 		out.append({
-			"a": Vector3(ax + sx * off, ya, az + sz * off),
-			"b": Vector3(bx + sx * off, yb, bz + sz * off),
+			"a": Vector3(pax, ya, paz),
+			"b": Vector3(pbx, yb, pbz),
 		})
 	return out
 
