@@ -110,15 +110,17 @@ func _ready() -> void:
 	_build_terrain()
 	_build_ocean_and_skirt()
 
-	# Force-load a block of chunks around the origin synchronously, so there's
-	# a spawn point and immediate surroundings ready before the player appears.
+	# Force-load a block of chunks around the start point synchronously, so
+	# there's a spawn point and immediate surroundings ready before the
+	# player appears.
+	var start_coord := _coord_at(START_TARGET.x, START_TARGET.y)
 	var initial_roads: Array = []
 	for dz in range(-1, 2):
 		for dx in range(-1, 2):
-			var data: Variant = _load_chunk_sync(Vector2i(dx, dz))
+			var data: Variant = _load_chunk_sync(start_coord + Vector2i(dx, dz))
 			if data != null:
 				initial_roads.append_array(data.get("roads", []))
-	_place_start(_central_spawn(initial_roads))
+	_place_start(_gate_spawn(initial_roads))
 
 func _process(delta: float) -> void:
 	if _tracked == null:
@@ -1189,16 +1191,26 @@ func _hash01(v: float) -> float:
 	var q := sin(v * 12.9898) * 43758.5453
 	return q - floor(q)
 
-func _central_spawn(roads: Array) -> Dictionary:
+## The vehicle/pedestrian gate of Tribhuvan University Teaching Hospital on
+## Maharajgunj Road (27.7349572N, 85.3307818E -- OSM node 1917103024, found
+## via Overpass and confirmed to sit ~33m from the "महाराजगञ्ज सडक" primary
+## way and essentially exactly on a service-road point in the fetched chunk
+## data). Projected with the same origin as the rest of the dataset (see
+## data/manifest.json's "center": {"lat": 27.71, "lon": 85.316}).
+const START_TARGET := Vector2(1456.79, -2778.24)
+
+func _gate_spawn(roads: Array) -> Dictionary:
 	var best_d := INF
 	var best := {}
 	for r in roads:
-		if float(r["w"]) < 7.0:
+		if float(r["w"]) < 3.0:
 			continue
 		var pts: Array = r["p"]
 		for i in range(pts.size() - 1):
 			var p: Array = pts[i]
-			var d: float = p[0] * p[0] + p[1] * p[1]
+			var dx: float = p[0] - START_TARGET.x
+			var dz: float = p[1] - START_TARGET.y
+			var d: float = dx * dx + dz * dz
 			if d < best_d:
 				best_d = d
 				var nx: Array = pts[i + 1]
