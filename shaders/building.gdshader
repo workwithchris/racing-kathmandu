@@ -70,15 +70,27 @@ void fragment() {
 	float base_ao = clamp(1.0 - v_height_frac, 0.0, 1.0);
 	float grime = grime_strength * base_ao * base_ao * mix(0.5, 1.0, dirt);
 
-	vec3 albedo = mix(base, grime_color * base, grime);
+	vec3 wall_albedo = mix(base, grime_color * base, grime);
+
+	// --- Glass ---------------------------------------------------------------
+	// Real glass is a dark, cool-tinted dielectric that mirrors the sky more and
+	// more as the view angle approaches grazing (Fresnel). Per-window variation
+	// keeps a facade from looking like one flat mirror.
+	vec3 glass_tint = vec3(0.06, 0.10, 0.13) * mix(0.7, 1.3, w_id);
+	float fresnel = pow(clamp(1.0 - dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0), 4.0);
+	// Reflect the sky/environment: strong at grazing, subtle head-on.
+	float glass_reflect = mix(0.08, 0.9, fresnel);
+
+	vec3 albedo = mix(wall_albedo, glass_tint, glass_mask);
 
 	// A minority of windows glow warm at dusk/night for the cinematic lit-window look.
 	float lit = step(1.0 - lit_window_chance, w_id) * glass_mask;
 
 	ALBEDO = albedo;
-	ROUGHNESS = clamp(mix(0.75, 0.95, dirt) - glass_mask * 0.55, 0.05, 1.0);
-	METALLIC = glass_mask * 0.15;
-	SPECULAR = mix(0.35, 0.6, w_id) * (0.4 + 0.6 * glass_mask);
+	// Wall stays rough; glass is smooth (sharp reflections) with slight per-pane jitter.
+	ROUGHNESS = mix(clamp(mix(0.75, 0.95, dirt), 0.05, 1.0), mix(0.04, 0.12, w_id), glass_mask);
+	METALLIC = glass_mask * glass_reflect;
+	SPECULAR = mix(mix(0.35, 0.6, w_id), 1.0, glass_mask);
 	EMISSION = lit_window_color * lit_window_energy * lit;
 	AO = clamp(0.55 + 0.45 * v_height_frac, 0.0, 1.0);
 	AO_LIGHT_AFFECT = 0.6;

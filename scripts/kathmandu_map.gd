@@ -22,8 +22,20 @@ extends Node3D
 @export var load_radius := 900.0
 @export var unload_radius := 1400.0
 @export var stream_interval := 0.5
-@export var npcs_per_chunk := 3
-@export var traffic_per_chunk := 2
+## Road widths come from OSM and vary a lot (many minor streets have no width
+## tag and fall back to a thin default). Clamp every drivable road up to this
+## minimum so streets read as consistent, proper roads instead of thin slivers.
+@export var road_min_width := 7.0
+## Max async chunks attached to the tree per frame. Attaching builds meshes,
+## collision, NPCs and traffic on the main thread, so a burst of loads finishing
+## together can hitch; draining a few per frame keeps streaming smooth.
+@export var max_chunk_attaches_per_frame := 1
+@export var npcs_per_chunk := 12
+@export var traffic_per_chunk := 6
+## Fraction of compact-footprint buildings rebuilt in old-Kathmandu Newar style:
+## dark-brick walls under tiered, overhanging tiled pagoda roofs instead of the
+## flat concrete roof + parapet. 0 = all modern, 1 = every eligible building.
+@export_range(0.0, 1.0) var pagoda_fraction := 0.55
 
 ## Ocean / terrain-skirt tuning.
 @export var ocean_extent := 40000.0
@@ -86,6 +98,7 @@ var _rebar_mesh_res: ArrayMesh
 # Streaming state.
 var _loaded: Dictionary = {}    # Vector2i -> Node3D chunk container
 var _pending: Dictionary = {}   # Vector2i -> true (in-flight async load)
+var _ready_queue: Array = []    # [[coord, built], ...] finished async chunks awaiting attach
 var _stream_timer := 0.0
 
 func _ready() -> void:
@@ -123,6 +136,16 @@ func _ready() -> void:
 	_place_start(_gate_spawn(initial_roads))
 
 func _process(delta: float) -> void:
+	# Drain a bounded number of finished async chunks per frame so a burst of
+	# loads completing at once can't stall the main thread on attach work.
+	var budget := max_chunk_attaches_per_frame
+	while budget > 0 and not _ready_queue.is_empty():
+		var item: Array = _ready_queue.pop_front()
+		var coord: Vector2i = item[0]
+		if not _loaded.has(coord):
+			_attach_chunk(coord, item[1])
+		budget -= 1
+
 	if _tracked == null:
 		return
 	_stream_timer -= delta
@@ -198,7 +221,9 @@ func _finish_async_chunk(coord: Vector2i, built: Dictionary) -> void:
 	_pending.erase(coord)
 	if built.is_empty() or _loaded.has(coord):
 		return
-	_attach_chunk(coord, built)
+	# Queue for throttled attach in _process rather than attaching inline, so
+	# several chunks finishing on the same frame don't hitch together.
+	_ready_queue.append([coord, built])
 
 func _unload_chunk(coord: Vector2i) -> void:
 	var node = _loaded.get(coord)
@@ -224,6 +249,7 @@ func _attach_chunk(coord: Vector2i, built: Dictionary) -> void:
 		var mm: MultiMesh = built.get(mm_key)
 		if mm != null:
 			var mmi := MultiMeshInstance3D.new()
+			mmi.name = mm_key
 			mmi.multimesh = mm
 			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			root.add_child(mmi)
@@ -362,9 +388,24 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 		col = col.lerp(Color(0.5, 0.5, 0.5), 0.05 * _hash01(seed * 3.1))
 		var roof_col := col.darkened(0.4)
 
+		# Old-Kathmandu (Newar) treatment: a fraction of compact, roughly
+		# rectangular footprints get dark-brick walls and a tiered, overhanging
+		# tiled roof instead of the flat concrete top. Long/complex footprints
+		# are left modern -- a pagoda roof only reads right over a compact plan.
+		var obb := _footprint_obb(pts, n)
+		var ohu: float = obb["hu"]
+		var ohv: float = obb["hv"]
+		var aspect := maxf(ohu, ohv) / maxf(minf(ohu, ohv), 0.5)
+		var pagoda_ok: bool = n <= 12 and ohu > 1.6 and ohv > 1.6 \
+				and ohu < 22.0 and ohv < 22.0 and aspect < 3.2
+		var is_pagoda: bool = pagoda_ok and _hash01(seed * 2.71) < pagoda_fraction
+		if is_pagoda:
+			# Newar facing-brick ("dachi appa"): deep, warm red-browns.
+			col = Color(0.40, 0.19, 0.15).lerp(Color(0.52, 0.29, 0.21), _hash01(seed * 4.43))
+
 		# Most flat-roofed concrete buildings in Kathmandu carry a low parapet
 		# lip around the roofline -- bare unpainted concrete, not the facade colour.
-		var has_parapet: bool = height >= 4.0 and _hash01(seed * 5.3) < 0.72
+		var has_parapet: bool = not is_pagoda and height >= 4.0 and _hash01(seed * 5.3) < 0.72
 		var parapet_h: float = 0.3 + _hash01(seed * 6.1) * 0.28
 		var parapet_col: Color = Color(0.63, 0.61, 0.57).lerp(col, 0.12)
 
@@ -391,7 +432,17 @@ func _build_buildings_mesh(buildings: Array, faces: PackedVector3Array, rng: Ran
 				_wall_tri(walls, faces, parapet_col, at, pt, pbt, top, top + parapet_h)
 				_wall_tri(walls, faces, parapet_col, at, pbt, bt, top, top + parapet_h)
 
-		if n <= 12:
+		if is_pagoda:
+			# Jhingati-style fired-clay roof tiles: dark red-brown, weathered.
+			var tile_col := Color(0.32, 0.13, 0.10).lerp(Color(0.45, 0.20, 0.14), _hash01(seed * 9.17))
+			var tiers := 1
+			if height >= 11.0:
+				tiers = 3
+			elif height >= 7.0:
+				tiers = 2
+			_add_pagoda_roof(roofs, obb, ohu, ohv, top, tiers, tile_col, col.darkened(0.18))
+			any_roof = true
+		elif n <= 12:
 			var poly := PackedVector2Array()
 			for i in range(n):
 				poly.append(Vector2(pts[i][0], pts[i][1]))
@@ -479,13 +530,142 @@ func _poly_area2(pts: Array, n: int) -> float:
 		a += float(p0[0]) * float(p1[1]) - float(p1[0]) * float(p0[1])
 	return absf(a) * 0.5
 
+# --- Newar pagoda roofs ------------------------------------------------------
+# A tiered, overhanging tiled roof is built over the footprint's oriented
+# bounding box (longest edge = primary axis), so the ridge lines up with the
+# building even when the plan is rotated relative to world axes.
+
+func _footprint_obb(pts: Array, n: int) -> Dictionary:
+	# Primary axis = direction of the longest edge, in the XZ plane.
+	var best := -1.0
+	var ux := 1.0
+	var uz := 0.0
+	for i in range(n):
+		var p0: Array = pts[i]
+		var p1: Array = pts[(i + 1) % n]
+		var dx: float = p1[0] - p0[0]
+		var dz: float = p1[1] - p0[1]
+		var l := dx * dx + dz * dz
+		if l > best:
+			best = l
+			ux = dx
+			uz = dz
+	var ul := sqrt(maxf(best, 1e-6))
+	ux /= ul
+	uz /= ul
+	var vx := -uz
+	var vz := ux
+	var umin := INF; var umax := -INF; var vmin := INF; var vmax := -INF
+	for i in range(n):
+		var pu: float = pts[i][0] * ux + pts[i][1] * uz
+		var pv: float = pts[i][0] * vx + pts[i][1] * vz
+		umin = minf(umin, pu); umax = maxf(umax, pu)
+		vmin = minf(vmin, pv); vmax = maxf(vmax, pv)
+	var cu := (umin + umax) * 0.5
+	var cv := (vmin + vmax) * 0.5
+	return {
+		"cx": ux * cu + vx * cv, "cz": uz * cu + vz * cv,
+		"ux": ux, "uz": uz, "vx": vx, "vz": vz,
+		"hu": (umax - umin) * 0.5, "hv": (vmax - vmin) * 0.5,
+	}
+
+func _obb_pt(obb: Dictionary, su: float, sv: float, y: float) -> Vector3:
+	return Vector3(
+		obb["cx"] + obb["ux"] * su + obb["vx"] * sv,
+		y,
+		obb["cz"] + obb["uz"] * su + obb["vz"] * sv)
+
+func _roof_quad(st: SurfaceTool, col: Color, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
+	# roofs surface is cull_disabled, so winding order doesn't matter here.
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(b)
+	st.set_color(col); st.add_vertex(c)
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(c)
+	st.set_color(col); st.add_vertex(d)
+
+# One pagoda roof tier. The roof *springs from the wall top* at the footprint
+# edge and rises to a small ridge cap; a separate eave segment droops down and
+# out beyond the walls. Because the spring line sits exactly on the wall, the
+# roof clamps onto the building instead of hovering above it.
+#   y0    = spring height (wall top for the lowest tier)
+#   ov    = how far the eaves overhang past the footprint
+#   drop  = how far the eave tip hangs below the spring line
+func _pagoda_tier(st: SurfaceTool, obb: Dictionary, hu: float, hv: float, ov: float, drop: float, y0: float, rise: float, col: Color) -> void:
+	var y_eave := y0 - drop
+	var y_ridge := y0 + rise
+	var eu := hu + ov
+	var ev := hv + ov
+	var tu := hu * 0.14
+	var tv := hv * 0.14
+	# The four corner sign pairs, CCW: (-,-) (+,-) (+,+) (-,+).
+	var su := [-1.0, 1.0, 1.0, -1.0]
+	var sv := [-1.0, -1.0, 1.0, 1.0]
+	var eave := []   # outer, drooping
+	var spring := [] # on the wall top
+	var ridge := []  # near the apex
+	for i in range(4):
+		eave.append(_obb_pt(obb, su[i] * eu, sv[i] * ev, y_eave))
+		spring.append(_obb_pt(obb, su[i] * hu, sv[i] * hv, y0))
+		ridge.append(_obb_pt(obb, su[i] * tu, sv[i] * tv, y_ridge))
+	for i in range(4):
+		var j := (i + 1) % 4
+		_roof_quad(st, col, eave[i], eave[j], spring[j], spring[i])   # drooping eave
+		_roof_quad(st, col, spring[i], spring[j], ridge[j], ridge[i]) # main slope
+	_roof_quad(st, col.darkened(0.12), ridge[0], ridge[1], ridge[2], ridge[3])
+
+# Set-back brick story between two roof tiers.
+func _pagoda_band(st: SurfaceTool, obb: Dictionary, hu: float, hv: float, y0: float, h: float, col: Color) -> void:
+	var yt := y0 + h
+	var A0 := _obb_pt(obb, -hu, -hv, y0); var A1 := _obb_pt(obb, -hu, -hv, yt)
+	var B0 := _obb_pt(obb, hu, -hv, y0); var B1 := _obb_pt(obb, hu, -hv, yt)
+	var C0 := _obb_pt(obb, hu, hv, y0); var C1 := _obb_pt(obb, hu, hv, yt)
+	var D0 := _obb_pt(obb, -hu, hv, y0); var D1 := _obb_pt(obb, -hu, hv, yt)
+	_roof_quad(st, col, A0, B0, B1, A1)
+	_roof_quad(st, col, B0, C0, C1, B1)
+	_roof_quad(st, col, C0, D0, D1, C1)
+	_roof_quad(st, col, D0, A0, A1, D1)
+
+const _PAGODA_SHRINK := 0.6  # each tier's footprint relative to the one below
+
+func _add_pagoda_roof(st: SurfaceTool, obb: Dictionary, hu: float, hv: float, top: float, tiers: int, tile_col: Color, band_col: Color) -> void:
+	var y := top    # spring height of the current tier (its roof meets the wall here)
+	var chu := hu
+	var chv := hv
+	for t in range(tiers):
+		var mn := minf(chu, chv)
+		var ov := clampf(mn * 0.32, 0.5, 1.3)
+		var drop := clampf(mn * 0.2, 0.35, 0.8)
+		var rise := clampf(mn * 0.55, 1.1, 2.4)
+		_pagoda_tier(st, obb, chu, chv, ov, drop, y, rise, tile_col)
+		if t < tiers - 1:
+			# The next, smaller tier rides a short set-back story that must start
+			# ON this roof's slope -- at the height the slope has reached directly
+			# above the set-back footprint -- or the upper roof floats in mid-air.
+			# Roof runs from footprint chu (at y) up to the ridge cap (0.14*chu);
+			# solve the slope height at horizontal extent (SHRINK*chu).
+			var nhu := chu * _PAGODA_SHRINK
+			var nhv := chv * _PAGODA_SHRINK
+			var emerge := y + rise * (1.0 - _PAGODA_SHRINK) / 0.86
+			var band_h := clampf(minf(nhu, nhv) * 0.6, 1.0, 1.8)
+			_pagoda_band(st, obb, nhu, nhv, emerge, band_h, band_col)
+			chu = nhu
+			chv = nhv
+			y = emerge + band_h   # next tier springs on top of the clerestory band
+
+## Drivable-road width, clamped up to road_min_width so no street renders as a
+## thin sliver. Used everywhere a road's width matters (surface, curbs, lane
+## markings, traffic lanes) so they all stay consistent.
+func _rw(r: Dictionary) -> float:
+	return maxf(float(r.get("w", 0.0)), road_min_width)
+
 func _build_curbs_mesh(roads: Array) -> Variant:
 	if roads.is_empty():
 		return null
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for r in roads:
-		var hw: float = float(r["w"]) * 0.5 + 0.8
+		var hw: float = _rw(r) * 0.5 + 0.8
 		_ribbon(st, r["p"], hw, 0.06)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.5, 0.5, 0.52)  # concrete sidewalk / curb
@@ -501,7 +681,7 @@ func _build_roads_mesh(roads: Array) -> Variant:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for r in roads:
-		_ribbon(st, r["p"], float(r["w"]) * 0.5, 0.11)
+		_ribbon(st, r["p"], _rw(r) * 0.5, 0.11)
 	var mat := ShaderMaterial.new()
 	mat.shader = ROAD_SHADER
 	mat.set_shader_parameter("asphalt_tex", _asphalt_tex)
@@ -519,7 +699,7 @@ func _build_markings_mesh(roads: Array) -> Variant:
 	var mw := 0.16
 	var any := false
 	for r in roads:
-		if float(r["w"]) < 7.0:
+		if _rw(r) < 9.0:
 			continue
 		var pts: Array = r["p"]
 		var phase := 0.0
@@ -698,31 +878,65 @@ func _rebar_bundle_mesh() -> ArrayMesh:
 	st.generate_normals()
 	return st.commit()
 
+# Low-poly 3D broadleaf tree: a tapered trunk under a canopy of a few
+# overlapping green blobs. Vertex-coloured so the whole tree is one surface /
+# one material, which keeps it cheap to instance across a chunk's MultiMesh.
 func _tree_mesh() -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var w := 2.6
-	var h := 5.2
-	# Two crossed vertical quads so the tree reads from any angle.
-	_billboard(st, Vector3(-w, 0, 0), Vector3(w, 0, 0), Vector3(w, h, 0), Vector3(-w, h, 0))
-	_billboard(st, Vector3(0, 0, -w), Vector3(0, 0, w), Vector3(0, h, w), Vector3(0, h, -w))
+	_add_trunk_geo(st, Color(0.34, 0.23, 0.14), 0.24, 0.16, 2.1)
+	# Canopy: several offset, slightly-flattened spheres in varied greens.
+	var g_dark := Color(0.15, 0.33, 0.13)
+	var g_mid := Color(0.20, 0.42, 0.17)
+	var g_light := Color(0.27, 0.50, 0.22)
+	_add_blob(st, Vector3(0.0, 3.1, 0.0), 1.75, g_mid)
+	_add_blob(st, Vector3(1.0, 2.7, 0.5), 1.25, g_dark)
+	_add_blob(st, Vector3(-0.8, 2.9, -0.5), 1.3, g_light)
+	_add_blob(st, Vector3(0.1, 4.0, -0.3), 1.2, g_mid)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = _tree_texture()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	mat.alpha_scissor_threshold = 0.5
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.roughness = 1.0
+	mat.vertex_color_use_as_albedo = true
+	mat.roughness = 0.98
 	st.set_material(mat)
 	st.generate_normals()
 	return st.commit()
 
-func _billboard(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
-	st.set_uv(Vector2(0, 1)); st.add_vertex(a)
-	st.set_uv(Vector2(1, 1)); st.add_vertex(b)
-	st.set_uv(Vector2(1, 0)); st.add_vertex(c)
-	st.set_uv(Vector2(0, 1)); st.add_vertex(a)
-	st.set_uv(Vector2(1, 0)); st.add_vertex(c)
-	st.set_uv(Vector2(0, 0)); st.add_vertex(d)
+func _tri_c(st: SurfaceTool, col: Color, a: Vector3, b: Vector3, c: Vector3) -> void:
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(b)
+	st.set_color(col); st.add_vertex(c)
+
+# Tapered n-gon prism trunk from y=0 (radius r0) to y=h (radius r1).
+func _add_trunk_geo(st: SurfaceTool, col: Color, r0: float, r1: float, h: float) -> void:
+	var segs := 6
+	for j in range(segs):
+		var t0 := TAU * float(j) / segs
+		var t1 := TAU * float(j + 1) / segs
+		var b0 := Vector3(r0 * cos(t0), 0.0, r0 * sin(t0))
+		var b1 := Vector3(r0 * cos(t1), 0.0, r0 * sin(t1))
+		var u0 := Vector3(r1 * cos(t0), h, r1 * sin(t0))
+		var u1 := Vector3(r1 * cos(t1), h, r1 * sin(t1))
+		_tri_c(st, col, b0, u0, u1)
+		_tri_c(st, col, b0, u1, b1)
+
+# Low-poly sphere (slightly flattened vertically) for a foliage blob.
+func _add_blob(st: SurfaceTool, center: Vector3, r: float, col: Color) -> void:
+	var rings := 4
+	var segs := 6
+	for i in range(rings):
+		var phi0 := PI * float(i) / rings
+		var phi1 := PI * float(i + 1) / rings
+		for j in range(segs):
+			var th0 := TAU * float(j) / segs
+			var th1 := TAU * float(j + 1) / segs
+			var p00 := center + _sph(r, phi0, th0)
+			var p01 := center + _sph(r, phi0, th1)
+			var p10 := center + _sph(r, phi1, th0)
+			var p11 := center + _sph(r, phi1, th1)
+			_tri_c(st, col, p00, p10, p11)
+			_tri_c(st, col, p00, p11, p01)
+
+func _sph(r: float, phi: float, theta: float) -> Vector3:
+	return Vector3(r * sin(phi) * cos(theta), r * cos(phi) * 0.85, r * sin(phi) * sin(theta))
 
 # --- NPCs / traffic, spawned per chunk instead of once globally --------------
 
@@ -811,7 +1025,7 @@ func _npc_spawn_points(roads: Array, footpaths: Array, buildings: Array, rng: Ra
 			if rng.randf() < 0.5:
 				sx = -sx
 				sz = -sz
-			var hw := float(r["w"]) * 0.5 + 0.8
+			var hw := _rw(r) * 0.5 + 0.8
 			var off := hw + 1.0
 			pax = ax + sx * off
 			paz = az + sz * off
@@ -874,7 +1088,7 @@ func _spawn_traffic_for_chunk(root: Node3D, paths: Array) -> void:
 ## than a single straight segment.
 func _lane_path(r: Dictionary, side_positive: bool) -> PackedVector3Array:
 	var pts: Array = r["p"]
-	var hw: float = float(r["w"]) * 0.5
+	var hw: float = _rw(r) * 0.5
 	var lane_off: float = maxf(hw * 0.5, 1.2)
 	var out := PackedVector3Array()
 	var n := pts.size()
@@ -955,15 +1169,18 @@ func _build_terrain() -> void:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var faces := PackedVector3Array()
-	var low := Color(0.36, 0.34, 0.30)
-	var high := Color(0.31, 0.44, 0.25)
+	# Grassy valley: a green city floor rising to lusher green on the hills.
+	var low := Color(0.32, 0.41, 0.21)
+	var high := Color(0.22, 0.45, 0.18)
 	for i in range(_nz - 1):
 		for j in range(_nx - 1):
 			var a := _grid_pos(i, j)
 			var b := _grid_pos(i, j + 1)
 			var c := _grid_pos(i + 1, j + 1)
 			var d := _grid_pos(i + 1, j)
-			var col := low.lerp(high, a.y / _hmax)
+			var col := low.lerp(high, clampf(a.y / _hmax, 0.0, 1.0))
+			# Per-cell tint break-up so the ground isn't a flat wash of colour.
+			col = col.lerp(col.darkened(0.12), _hash01(a.x * 0.21 + a.z * 0.13))
 			_ctri(st, faces, col, a, b, c)
 			_ctri(st, faces, col, a, c, d)
 	var mat := StandardMaterial3D.new()
@@ -1069,31 +1286,6 @@ func _window_texture() -> ImageTexture:
 					col = glass
 					is_glass = true
 			img.set_pixel(x, y, Color(col.r, col.g, col.b, 1.0 if is_glass else 0.0))
-	return ImageTexture.create_from_image(img)
-
-func _tree_texture() -> ImageTexture:
-	var s := 128
-	var img := Image.create_empty(s, s, false, Image.FORMAT_RGBA8)
-	var clear := Color(0, 0, 0, 0)
-	var trunk := Color(0.36, 0.24, 0.14, 1.0)
-	var cx := 64.0
-	var cy := 46.0
-	var rad := 44.0
-	for y in range(s):
-		for x in range(s):
-			var col := clear
-			# trunk
-			if x >= 58 and x <= 70 and y >= 74 and y <= 128:
-				col = trunk
-			# canopy blob with ragged edge + shaded greens
-			var dx := x - cx
-			var dy := (y - cy) * 1.15
-			var dist := sqrt(dx * dx + dy * dy)
-			var edge := rad * (0.82 + 0.18 * _hash01(float(x) * 0.7 + float(y) * 1.3))
-			if dist < edge:
-				var shade := 0.55 + 0.45 * (1.0 - dist / rad) + 0.12 * _hash01(float(x) * 2.1 + float(y))
-				col = Color(0.16 * shade, 0.42 * shade, 0.15 * shade, 1.0)
-			img.set_pixel(x, y, col)
 	return ImageTexture.create_from_image(img)
 
 # --- helpers ----------------------------------------------------------------

@@ -1,27 +1,115 @@
-[gd_scene load_steps=5 format=3 uid="uid://npc_racing_pedestrian"]
+[gd_scene load_steps=12 format=3 uid="uid://npc_racing_pedestrian"]
 
 [ext_resource type="Script" path="res://scripts/npc.gd" id="1"]
 
-[sub_resource type="StandardMaterial3D" id="mat_npc"]
-albedo_color = Color(0.25, 0.55, 0.75, 1)
+[sub_resource type="StandardMaterial3D" id="mat_skin"]
+albedo_color = Color(0.75, 0.58, 0.42, 1)
+roughness = 0.75
+
+[sub_resource type="StandardMaterial3D" id="mat_shirt"]
+albedo_color = Color(0.3, 0.45, 0.6, 1)
 roughness = 0.8
 
-[sub_resource type="CapsuleMesh" id="mesh_npc"]
-material = SubResource("mat_npc")
-radius = 0.25
-height = 1.4
+[sub_resource type="StandardMaterial3D" id="mat_pants"]
+albedo_color = Color(0.22, 0.24, 0.32, 1)
+roughness = 0.85
 
-[sub_resource type="CapsuleShape3D" id="shape_npc"]
-radius = 0.25
-height = 1.4
+[sub_resource type="StandardMaterial3D" id="mat_shoe"]
+albedo_color = Color(0.1, 0.09, 0.1, 1)
+roughness = 0.6
+
+[sub_resource type="BoxMesh" id="mesh_head"]
+material = SubResource("mat_skin")
+size = Vector3(0.26, 0.28, 0.24)
+
+[sub_resource type="BoxMesh" id="mesh_torso"]
+material = SubResource("mat_shirt")
+size = Vector3(0.44, 0.54, 0.26)
+
+[sub_resource type="BoxMesh" id="mesh_arm"]
+material = SubResource("mat_shirt")
+size = Vector3(0.13, 0.56, 0.15)
+
+[sub_resource type="SphereMesh" id="mesh_hand"]
+material = SubResource("mat_skin")
+radius = 0.075
+height = 0.15
+
+[sub_resource type="BoxMesh" id="mesh_leg"]
+material = SubResource("mat_pants")
+size = Vector3(0.16, 0.8, 0.19)
+
+[sub_resource type="BoxMesh" id="mesh_foot"]
+material = SubResource("mat_shoe")
+size = Vector3(0.18, 0.1, 0.26)
+
+[sub_resource type="CapsuleShape3D" id="shape_body"]
+radius = 0.28
+height = 1.65
 
 [node name="NPC" type="CharacterBody3D"]
 script = ExtResource("1")
 
-[node name="Mesh" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
-mesh = SubResource("mesh_npc")
+[node name="Rig" type="Node3D" parent="."]
+unique_name_in_owner = true
+
+[node name="Torso" type="MeshInstance3D" parent="Rig"]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.15, 0)
+mesh = SubResource("mesh_torso")
+
+[node name="Head" type="MeshInstance3D" parent="Rig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.59, 0)
+mesh = SubResource("mesh_head")
+
+[node name="ArmL" type="Node3D" parent="Rig"]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.29, 1.4, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Rig/ArmL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.28, 0)
+mesh = SubResource("mesh_arm")
+
+[node name="Hand" type="MeshInstance3D" parent="Rig/ArmL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.58, 0)
+mesh = SubResource("mesh_hand")
+
+[node name="ArmR" type="Node3D" parent="Rig"]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.29, 1.4, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Rig/ArmR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.28, 0)
+mesh = SubResource("mesh_arm")
+
+[node name="Hand" type="MeshInstance3D" parent="Rig/ArmR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.58, 0)
+mesh = SubResource("mesh_hand")
+
+[node name="LegL" type="Node3D" parent="Rig"]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.11, 0.88, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Rig/LegL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.4, 0)
+mesh = SubResource("mesh_leg")
+
+[node name="Foot" type="MeshInstance3D" parent="Rig/LegL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.83, 0.05)
+mesh = SubResource("mesh_foot")
+
+[node name="LegR" type="Node3D" parent="Rig"]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.11, 0.88, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Rig/LegR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.4, 0)
+mesh = SubResource("mesh_leg")
+
+[node name="Foot" type="MeshInstance3D" parent="Rig/LegR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.83, 0.05)
+mesh = SubResource("mesh_foot")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
-shape = SubResource("shape_npc")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.825, 0)
+shape = SubResource("shape_body")

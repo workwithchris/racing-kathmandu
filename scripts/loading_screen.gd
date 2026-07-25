@@ -40,5 +40,18 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 
+	# Build the world now and let it render a few frames *behind* this loading
+	# UI. Adding it runs the heavy terrain/starting-chunk generation, and the
+	# frames after that give the GPU time to compile the building/road/etc.
+	# shader pipelines. Doing it here means that cost is paid while the progress
+	# screen is still up, instead of freezing the first seconds of gameplay.
 	var packed: PackedScene = ResourceLoader.load_threaded_get(TARGET_SCENE)
-	get_tree().change_scene_to_packed(packed)
+	var world := packed.instantiate()
+	get_tree().root.add_child(world)
+	_status.text = "Warming up..."
+	for _i in range(12):
+		await get_tree().process_frame
+
+	# Promote the world to the active scene and drop the loading screen.
+	get_tree().current_scene = world
+	queue_free()
